@@ -14,7 +14,9 @@ const schema = z.object({
     AI_ENDPOINT: z.url({protocol: /^https?$/}).optional(),
     AI_MODEL: z.string().min(1).optional(),
     AI_API_KEY: z.string().min(1).optional(),
-    DEMO_USER_PASSWORD: z.string().max(128).optional()
+    DEMO_USER_PASSWORD: z.string().max(128).optional(),
+    ACCESS_TOKEN_SECRET: z.string().max(128),
+    REFRESH_TOKEN_SECRET: z.string().max(128)
 })
 
 const parsed = schema.safeParse(process.env)
