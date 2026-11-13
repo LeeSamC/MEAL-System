@@ -1,31 +1,65 @@
-import {Request, Response, NextFunction} from 'express'
+import type { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
-import { env } from '../env'
+import { z } from 'zod'
+import { and, eq, gt } from 'drizzle-orm'
 
-export type AuthUser = {
-    userId: string
-}
+import { env } from '../env'
+import { db } from '../db'
+import { refreshTokens } from '../db/schema'
+
+const accessClaimsSchema = z.object({
+    userId: z.uuid(),
+    sessionId: z.uuid()
+})
+
+export type AuthUser = z.infer<typeof accessClaimsSchema>
 
 export interface AuthenticateRequest extends Request {
     user?: AuthUser
 }
 
-export function authenticateAccessToken(req: AuthenticateRequest, res: Response, next: NextFunction) {
-    const token = req.cookies.accessToken
+export async function authenticateAccessToken(req: AuthenticateRequest, res: Response, next: NextFunction) {
+    const token = req.cookies?.accessToken
 
-    if(!token) {
+    if(typeof token !== 'string' || !token){
         return res.status(401).json({error: 'Invalid token'})
+    }
+
+    if(!env.ACCESS_TOKEN_SECRET){
+        return next(new Error('Access token secret not configured'))
+    }
+
+    let claims: AuthUser
+
+    try{
+        const decoded = jwt.verify(token, env.ACCESS_TOKEN_SECRET, {algorithms: ['HS256']})
+
+        const result = accessClaimsSchema.safeParse(decoded)
+
+        if(!result.success){
+            return res.status(401).json({ error: 'Invalid token' })
+        }
+
+        claims = result.data
+    }catch (error) {
+         return res.status(401).json({ error: 'Invalid token' })
     }
 
     try{
-        const decoded = jwt.verify(token, env.ACCESS_TOKEN_SECRET!) as AuthUser
-        req.user = {userId: decoded.userId}
-        next()
-    }catch(error){
-        if(error instanceof jwt.TokenExpiredError){
-            return res.status(401).json({error: 'Invalid token'})
-        }
+        const session  = await db.query.refreshTokens.findFirst({where: and(
+            eq(refreshTokens.id, claims.sessionId),
+            eq(refreshTokens.userId, claims.userId),
+            eq(refreshTokens.revoked, false),
+            gt(refreshTokens.expiresAt, new Date())
+        )})
 
-        return res.status(401).json({error: 'Invalid token'})
+        if(!session){
+            return res.status(401).json({error: 'Session expired or revoked'})
+        }
+    }catch (error) {
+        return next(error)
     }
+
+    req.user = claims
+    next()
 }
