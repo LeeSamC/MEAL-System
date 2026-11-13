@@ -5,8 +5,6 @@ import { db } from '../db'
 import { refreshTokens } from '../db/schema'
 import { eq } from 'drizzle-orm'
 import { env } from '../env'
-
-import { AuthUser } from './authenticateAccessToken'
 import { AuthenticateRequest } from './authenticateAccessToken'
 import { hashToken } from '../utils/hashToken'
 
@@ -32,7 +30,7 @@ export async function authenticateRefreshToken(req: AuthenticateRequest, res: Re
             return res.status(401).json({error: 'Invalid token'})
         }
 
-        req.user = {userId: decoded.userId}
+        req.user = {userId: decoded.userId, sessionId: refreshToken.id}
     }catch {
         return res.status(401).json({ error: 'Invalid token' })
     }
