@@ -5,12 +5,15 @@ import jwt from "jsonwebtoken";
 
 
 import { db } from "../../db";
-import { eq } from "drizzle-orm";
+import { eq, and, gt} from "drizzle-orm";
 import { users, refreshTokens } from "../../db/schema";
 import { env } from "../../env";
 import { randomUUID } from "node:crypto";
 import { hashToken } from "../../utils/hashToken";
 import { rateLimiter } from "../../middleware/rateLimiter";
+
+import { authenticateRefreshToken } from '../../middleware/authenticateRefreshToken'
+import type { AuthenticateRequest } from '../../middleware/authenticateAccessToken'
 
 
 const router = Router()
@@ -20,12 +23,12 @@ const loginSchema = z.object({
     password: z.string().min(1, 'Must have a password').max(8, 'Must be 8 characters long')
 })
 
-function issueAccessToken(userId: string){
+function issueAccessToken(userId: string, sessionId: string){
     if(!env.ACCESS_TOKEN_SECRET){
         throw new Error('Access token secret not configured')
     }
 
-    return jwt.sign({userId}, env.ACCESS_TOKEN_SECRET, {expiresIn: '30m'})
+    return jwt.sign({userId, sessionId}, env.ACCESS_TOKEN_SECRET, {expiresIn: '30m', algorithm: 'HS256'})
 }
 
 function issueRefreshToken(userId: string){
@@ -89,16 +92,19 @@ router.post('/login', rateLimiter, async (req, res) => {
             return res.status(401).json({message: 'The name or passowrd is incorrect'})
         }
 
-        const accessToken = issueAccessToken(existingUser.userId)
+        const sessionId = randomUUID()
+
+        const accessToken = issueAccessToken(existingUser.userId, sessionId)
         const refreshToken = issueRefreshToken(existingUser.userId)
 
         await db.transaction(async tx => {
             await tx.delete(refreshTokens).where(eq(refreshTokens.userId, existingUser.userId))
 
             await tx.insert(refreshTokens).values({
+                id: sessionId,
                 tokenHash: hashToken(refreshToken),
                 userId: existingUser.userId,
-                expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                expiresAt: new Date( Date.now() + 7 * 24 * 60 * 60 * 1000 ),
                 revoked: false
             })
         })
@@ -120,4 +126,67 @@ router.post('/login', rateLimiter, async (req, res) => {
 
     }
     
+})
+
+router.post('/logout', authenticateRefreshToken, async(req:AuthenticateRequest, res) => {
+    const user = req.user
+
+    if(!user){
+        return res.status(401).json({error: 'Invalid session'})
+    }
+
+    try{
+        await db.update(refreshTokens).set({revoked: true}).where(eq(refreshTokens.id, user.sessionId))
+
+        clearAuthCookies(res)
+
+        return res.status(200).json({message: 'Successfully logged out'})
+
+    }catch (error) {
+        return res.status(500).json({message: 'Failed to logout'})
+    }
+})
+
+router.post('/refresh', authenticateRefreshToken, async(req: AuthenticateRequest, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+
+    const user = req.user
+    const currentRefreshToken = req.cookies.refreshToken
+
+    if(!user || typeof currentRefreshToken !== 'string' || !currentRefreshToken) {
+        return res.status(401).json({message: 'Invalid session'})
+    }
+
+    try{
+        const accessToken = issueAccessToken(user.userId, user.sessionId)
+        const newRefreshToken = issueRefreshToken(user.userId)
+
+        const [updatedSession] = await db.update(refreshTokens).set({
+            tokenHash: hashToken(newRefreshToken),
+            expiresAt: new Date( Date.now() + 7 * 24 * 60 * 60 * 1000)
+        })
+        .where(
+            and(
+                eq(refreshTokens.id, user.sessionId),
+                eq(refreshTokens.userId, user.userId),
+                eq(refreshTokens.tokenHash, hashToken(currentRefreshToken)),
+                eq(refreshTokens.revoked, false),
+                gt(refreshTokens.expiresAt, new Date())
+
+            )
+        )
+        .returning({id: refreshTokens.id})
+
+        if(!updatedSession){
+            return res.status(200).json({error: 'Refresh token expired, revoked or already used'})
+        }
+
+        setAuthCookies(res, accessToken, newRefreshToken)
+
+        return res.status(200).json({message: 'Tokens refreshed successfully'})
+    }catch (error){
+        console.error(error)
+
+        return res.status(500).json({message: 'Failed   to refresh tokens'})
+    }
 })
