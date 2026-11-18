@@ -2,7 +2,7 @@ import { Router } from "express";
 import {z} from 'zod'
 import bcrypt from 'bcryptjs'
 import jwt from "jsonwebtoken";
-
+import { asyncHandler, HttpError } from "../../middleware/errors";
 
 import { db } from "../../db";
 import { eq, and, gt} from "drizzle-orm";
@@ -74,119 +74,116 @@ function clearAuthCookies(res: any){
     res.clearCookie('refreshToken', cookieOptions)
 }
 
-router.post('/login', rateLimiter, async (req, res) => {
-
-    try{
-
-        const data = loginSchema.parse(req.body)
-
-        const existingUser = await db.query.users.findFirst({where: eq(users.name, data.name)})
-
-        if(!existingUser){
-            return res.status(401).json({message: 'The name or password is incorrect'})
-        }
-
-        const validPassword = await bcrypt.compare(data.password, existingUser.passwordHash)
-
-        if(!validPassword) {
-            return res.status(401).json({message: 'The name or passowrd is incorrect'})
-        }
-
-        const sessionId = randomUUID()
-
-        const accessToken = issueAccessToken(existingUser.userId, sessionId)
-        const refreshToken = issueRefreshToken(existingUser.userId)
-
-        await db.transaction(async tx => {
-            await tx.delete(refreshTokens).where(eq(refreshTokens.userId, existingUser.userId))
-
-            await tx.insert(refreshTokens).values({
-                id: sessionId,
-                tokenHash: hashToken(refreshToken),
-                userId: existingUser.userId,
-                expiresAt: new Date( Date.now() + 7 * 24 * 60 * 60 * 1000 ),
-                revoked: false
-            })
-        })
-
-        setAuthCookies(res, accessToken, refreshToken)
-
-        return res.status(200).json({
-            message: 'User successfully logged in',
-            user: {
-                userId: existingUser.userId,
-                name: existingUser.name
-            }
-        })
-
-    }catch (error){
-        console.error(error)
-
-        return res.status(500).json({message: 'Failed to login'})
-
-    }
+router.post('/login', rateLimiter, asyncHandler(async (req, res) => {
     
-})
+    const result = loginSchema.safeParse(req.body)
 
-router.post('/logout', authenticateRefreshToken, async(req:AuthenticateRequest, res) => {
+    if(!result.success){
+        throw new HttpError(400, 'Validation failed', 
+            result.error.issues.map(issue => ({
+                path: issue.path.join('.'),
+                message: issue.message
+            }))
+        )
+    }
+
+    const data = result.data
+
+    const existingUser = await db.query.users.findFirst({where: eq(users.name, data.name)})
+
+    if(!existingUser){
+        throw new HttpError(401, 'The name or password is incorrect')
+    }
+
+    const validPassword = await bcrypt.compare(data.password, existingUser.passwordHash)
+
+    if(!validPassword){
+        throw new HttpError(401, 'The name or password is incorrect')
+    }
+
+    const sessionId = randomUUID()
+
+    const accessToken = issueAccessToken(existingUser.userId, sessionId)
+    const refreshToken = issueRefreshToken(existingUser.userId)
+
+    await db.transaction(async tx => {
+        await tx.delete(refreshTokens).where(
+            eq(refreshTokens.userId, existingUser.userId)
+        )
+
+        await tx.insert(refreshTokens).values({
+            id: sessionId,
+            tokenHash: hashToken(refreshToken),
+            userId: existingUser.userId,
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            revoked: false
+        })
+    })
+
+    setAuthCookies(res, accessToken, refreshToken)
+
+    return res.status(200).json({
+        message: 'User sucessfully logged in',
+        user: {
+            userId: existingUser.userId,
+            name: existingUser.name
+        }
+    })
+    
+}))
+
+router.post('/logout', authenticateRefreshToken, asyncHandler(async(req:AuthenticateRequest, res) => {
     const user = req.user
 
     if(!user){
-        return res.status(401).json({error: 'Invalid session'})
+        throw new HttpError(401, 'Invalid Session')
     }
 
-    try{
-        await db.update(refreshTokens).set({revoked: true}).where(eq(refreshTokens.id, user.sessionId))
+    await db.update(refreshTokens).set({
+        revoked: true
+    })
+    .where(eq(refreshTokens.id, user.sessionId))
 
-        clearAuthCookies(res)
+    clearAuthCookies(res)
 
-        return res.status(200).json({message: 'Successfully logged out'})
+    return res.status(200).json({message: 'Successfully logged out'})
+}))
 
-    }catch (error) {
-        return res.status(500).json({message: 'Failed to logout'})
-    }
-})
-
-router.post('/refresh', authenticateRefreshToken, async(req: AuthenticateRequest, res) => {
+router.post('/refresh', authenticateRefreshToken, asyncHandler(async(req: AuthenticateRequest, res) => {
     res.setHeader('Cache-Control', 'no-store')
 
     const user = req.user
     const currentRefreshToken = req.cookies.refreshToken
 
     if(!user || typeof currentRefreshToken !== 'string' || !currentRefreshToken) {
-        return res.status(401).json({message: 'Invalid session'})
+        throw new HttpError(401, 'Invalid Session')
     }
 
-    try{
-        const accessToken = issueAccessToken(user.userId, user.sessionId)
-        const newRefreshToken = issueRefreshToken(user.userId)
+    const accessToken = issueAccessToken(user.userId, user.sessionId)
+    const newRefreshToken = issueRefreshToken(user.userId)
 
-        const [updatedSession] = await db.update(refreshTokens).set({
-            tokenHash: hashToken(newRefreshToken),
-            expiresAt: new Date( Date.now() + 7 * 24 * 60 * 60 * 1000)
-        })
-        .where(
-            and(
-                eq(refreshTokens.id, user.sessionId),
-                eq(refreshTokens.userId, user.userId),
-                eq(refreshTokens.tokenHash, hashToken(currentRefreshToken)),
-                eq(refreshTokens.revoked, false),
-                gt(refreshTokens.expiresAt, new Date())
+    const [updatedSession] = await db.update(refreshTokens).set({
+        tokenHash: hashToken(newRefreshToken),
+        expiresAt: new Date( Date.now() + 7 * 24 * 60 * 60 * 1000)
+    })
+    .where(
+        and(
+            eq(refreshTokens.id, user.sessionId),
+            eq(refreshTokens.userId, user.userId),
+            eq(refreshTokens.tokenHash, hashToken(currentRefreshToken)),
+            eq(refreshTokens.revoked, false),
+            gt(refreshTokens.expiresAt, new Date())
 
-            )
         )
-        .returning({id: refreshTokens.id})
+    )
+    .returning({id: refreshTokens.id})
 
-        if(!updatedSession){
-            return res.status(200).json({error: 'Refresh token expired, revoked or already used'})
-        }
-
-        setAuthCookies(res, accessToken, newRefreshToken)
-
-        return res.status(200).json({message: 'Tokens refreshed successfully'})
-    }catch (error){
-        console.error(error)
-
-        return res.status(500).json({message: 'Failed   to refresh tokens'})
+    if(!updatedSession){
+        throw new HttpError(401, 'Refresh token expired, revoked or already used')
     }
-})
+
+    setAuthCookies(res, accessToken, newRefreshToken)
+
+    return res.status(200).json({message: 'Tokens refreshed successfully'})
+    
+}))
