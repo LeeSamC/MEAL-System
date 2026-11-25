@@ -1,4 +1,5 @@
 import {pgTable, uuid, varchar, timestamp, pgEnum, integer, jsonb, unique} from 'drizzle-orm/pg-core'
+import { users } from './users'
 import { projects } from './projects'
 import { periods } from './periods'
 
@@ -24,6 +25,8 @@ export const revisions = pgTable('revisions', {
     rows: jsonb('rows').notNull().default('[]'),
     submittedAt: timestamp('submitted_at'),
     verifiedAt: timestamp('verified_at'),
+    submittedBy: uuid('submitted_by').notNull().references(() => users.userId),
+    lockVersion: integer('lock_version').notNull().default(0)
 
 },
 (table) => [
