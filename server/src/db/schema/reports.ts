@@ -1,6 +1,7 @@
 import {pgTable, uuid, jsonb, text, integer, timestamp} from 'drizzle-orm/pg-core'
 import { projects } from './projects'
 import { periods } from './periods'
+import { users } from './users'
 
 export const reports = pgTable('reports', {
     reportId: uuid('report_id').defaultRandom().primaryKey(),
@@ -11,5 +12,9 @@ export const reports = pgTable('reports', {
     model: text('model').notNull(),
     version: integer('version').notNull().default(1),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    approvedAt: timestamp('approved_at')
+    approvedAt: timestamp('approved_at'),
+    sourceKey: text('source_key'),
+    createdBy: uuid('created_by').references(() => users.userId),
+    approvedBy: uuid('approved_by').references(() => users.userId),
+    lockVersion: integer('lock_version').notNull().default(0)
 })
