@@ -4,7 +4,16 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "tsx watch src/server.ts"
+    "dev": "tsx watch src/server.ts",
+    "check": "tsc --noEmit",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test": "npm run build && node --test dist/checks.test.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "account": "tsx src/manage.ts",
+    "backup": "tsx src/backup.ts"
   },
   "keywords": [],
   "type": "commonjs",
