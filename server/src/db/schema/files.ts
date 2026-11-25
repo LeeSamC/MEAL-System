@@ -1,4 +1,4 @@
-import {pgTable, pgEnum, uuid, varchar, jsonb, text, unique} from 'drizzle-orm/pg-core'
+import {pgTable, pgEnum, uuid, varchar, jsonb, text, unique, integer, timestamp} from 'drizzle-orm/pg-core'
 import { projects } from './projects'
 import { revisions } from './revisions'
 
@@ -24,6 +24,9 @@ export const files = pgTable('files', {
     rowId: uuid('row_id'),
     sha256: text('sha256').notNull(),
     extraction: jsonb('extraction').notNull().default('{}'),
+    storageKey: uuid('storage_key'),
+    byteSize: integer('byte_size'),
+    createdAt: timestamp('created_at').notNull().defaultNow()
 },
 (table) => [
     unique('file_project_id').on(
