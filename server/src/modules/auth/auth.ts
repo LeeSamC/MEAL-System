@@ -17,6 +17,7 @@ import type { AuthenticateRequest } from '../../middleware/authenticateAccessTok
 
 
 const router = Router()
+const dummyHash = bcrypt.hashSync(randomUUID(), 12)
 
 const loginSchema = z.object({
     name: z.string().min(1, 'Must have a username'),
